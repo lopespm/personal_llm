@@ -1,0 +1,12 @@
+version: "3"
+
+services:
+  postgres:
+    build: .
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data:/var/lib/postgresql/data
+      - ./init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql
+    env_file:
+      - .env
