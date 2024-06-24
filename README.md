@@ -3,7 +3,7 @@
 ![Personal Local LLM (Llama3): powered by WhatsApp and Obsidian Data Intro Image](https://github.com/lopespm/agent-trainer/assets/3640622/87bc19b6-268d-4a1e-90f8-a16ce34c80c3)
 <intro>
 
-More details **[in this blog article](https://lopespm.github.io/2020/08/03/implementation-autocomplete-system-design.html)**
+More details **[in this blog article](https://lopespm.github.io/machine_learning/2024/06/24/personal-llm.html)**
 
 ## Requirements
 
