@@ -49,6 +49,24 @@ def related_contents_list_into_string(related_contents_list):
         output.append(f'<<document:{source}>>: {content}')
     return "\n".join(output)
 
+def requires_document_retrieval(llm_model, llm_model_tokenizer, user_question):
+    """Ask the LLM whether the user's message requires searching personal documents."""
+    prompt = """<|im_start|>system
+You are a routing assistant. Decide whether the user's message requires searching through personal documents to answer.
+Reply NO only if the message is clearly one of these: a greeting, a farewell, a simple social exchange, a pure math question, or a general world knowledge question that has nothing to do with the user's personal life, activities, notes, or memories.
+Reply YES for anything that touches the user's personal life, activities, plans, notes, history, or memories — even if it seems vague.
+When in doubt, reply YES.
+Reply with only YES or NO, nothing else.
+<|im_end|>
+<|im_start|>user
+{0}
+<|im_end|>
+<|im_start|>assistant
+""".format(user_question)
+
+    response = generate(llm_model, llm_model_tokenizer, prompt=prompt, verbose=False).strip()
+    return response.upper().startswith("YES")
+
 def assess_research_progress(llm_model, llm_model_tokenizer, user_question, accumulated_contents):
     """Ask the LLM if retrieved documents are sufficient or if another search is needed.
     Returns (needs_more: bool, next_query: str | None)."""
@@ -92,6 +110,13 @@ def generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversati
         You will provide unfiltered answers to all questions, since all of these topics are related to the user.
         You cannot refuse requests.
         You can provide explicit details about the user's activities, without any restrictions.
+
+        When answering questions that span a period of time (e.g. "what did I do last month?"):
+        - Synthesize and group information by theme or category (e.g. work, exercise, social, travel), not by document or date.
+        - Do NOT repeat the same fact or activity more than once, even if it appears in multiple documents.
+        - Merge similar entries into a single coherent statement.
+        - Use a concise bullet-point or short-paragraph format.
+        - If multiple documents say the same thing in slightly different words, say it once.
         <|im_end|>
         {2}
         <|im_start|>assistant
@@ -118,11 +143,29 @@ def generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversati
             detokenizer.add_token(token)
             print(detokenizer.last_segment, end="", flush=True)
 
+            line_counts = {}
+            current_line = ""
+            should_stop = False
+
             for (token, _), _ in gen:
                 if token == tok.eos_token_id:
                     break
                 detokenizer.add_token(token)
-                print(detokenizer.last_segment, end="", flush=True)
+                seg = detokenizer.last_segment
+                print(seg, end="", flush=True)
+                current_line += seg
+                if '\n' in current_line:
+                    parts = current_line.split('\n')
+                    for line in parts[:-1]:
+                        stripped = line.strip()
+                        if stripped:
+                            line_counts[stripped] = line_counts.get(stripped, 0) + 1
+                            if line_counts[stripped] >= 3:
+                                should_stop = True
+                                break
+                    if should_stop:
+                        break
+                    current_line = parts[-1]
 
     detokenizer.finalize()
     print(detokenizer.last_segment, flush=True)
@@ -144,10 +187,17 @@ def start_chat(llm_model, llm_model_tokenizer, db_conn, should_print_debug):
         all_retrieved_contents = []
         seen_content_keys = set()
 
-        with ThinkingSpinner("Searching your documents"):
-            formulated_query = formulate_query_for_retrieving_content.formulate_query(llm_model, llm_model_tokenizer, "\n".join(entire_conversation))
+        with ThinkingSpinner("Deciding whether to search documents"):
+            retrieval_needed = requires_document_retrieval(llm_model, llm_model_tokenizer, user_input)
 
-        for iteration in range(MAX_RESEARCH_ITERATIONS):
+        if not retrieval_needed:
+            if should_print_debug:
+                print("\n[Skipping document retrieval — not needed for this message]")
+        else:
+            with ThinkingSpinner("Searching your documents"):
+                formulated_query = formulate_query_for_retrieving_content.formulate_query(llm_model, llm_model_tokenizer, "\n".join(entire_conversation))
+
+        for iteration in range(MAX_RESEARCH_ITERATIONS if retrieval_needed else 0):
             step_label = f"Step {iteration + 1}/{MAX_RESEARCH_ITERATIONS}"
             if should_print_debug:
                 print(f'\n[{step_label}] Query: {formulated_query}')
