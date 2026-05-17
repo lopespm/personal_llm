@@ -8,6 +8,8 @@ import threading
 import itertools
 import time
 
+MAX_RESEARCH_ITERATIONS = 4
+
 
 class ThinkingSpinner:
     def __init__(self, message="Thinking"):
@@ -43,6 +45,32 @@ def related_contents_list_into_string(related_contents_list):
     for content, source, proximity in related_contents_list:
         output.append(f'<<document:{source}>>: {content}')
     return "\n".join(output)
+
+def assess_research_progress(llm_model, llm_model_tokenizer, user_question, accumulated_contents):
+    """Ask the LLM if retrieved documents are sufficient or if another search is needed.
+    Returns (needs_more: bool, next_query: str | None)."""
+    content_summary = related_contents_list_into_string(accumulated_contents)
+    prompt = """<|im_start|>system
+You are a research assistant deciding whether you have gathered enough information to fully answer a question.
+Given the user's question and the documents retrieved so far, decide:
+1. If you have sufficient information to give a complete and accurate answer, reply with exactly: SATISFIED
+2. If important information is clearly missing and another search would help, reply with exactly: SEARCH: <specific search query>
+Reply with only one of these two formats, nothing else.
+<|im_end|>
+<|im_start|>user
+Question: {0}
+
+Documents retrieved so far:
+{1}
+<|im_end|>
+<|im_start|>assistant
+""".format(user_question, content_summary)
+
+    response = generate(llm_model, llm_model_tokenizer, prompt=prompt, verbose=False).strip()
+    if response.upper().startswith("SEARCH:"):
+        next_query = response[len("SEARCH:"):].strip()
+        return True, next_query
+    return False, None
 
 def generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversation, related_contents, should_print_debug):
     prompt = """<|im_start|>system
@@ -89,16 +117,46 @@ def start_chat(llm_model, llm_model_tokenizer, db_conn, should_print_debug):
 
         entire_conversation.append(f'<|im_start|>user\n{user_input}<|im_end|>')
 
+        # Agentic research loop: keep searching until satisfied or max iterations reached
+        all_retrieved_contents = []
+        seen_content_keys = set()
+
         with ThinkingSpinner("Searching your documents"):
             formulated_query = formulate_query_for_retrieving_content.formulate_query(llm_model, llm_model_tokenizer, "\n".join(entire_conversation))
-            retrived_contents = retrieve_related_content_from_db.retrieve_related_content(db_conn, formulated_query, False)
 
-        if (should_print_debug):
-            print(f'Formulated query: {formulated_query}')
-            print(f'Retrived Contents: {retrived_contents}')
+        for iteration in range(MAX_RESEARCH_ITERATIONS):
+            step_label = f"Step {iteration + 1}/{MAX_RESEARCH_ITERATIONS}"
+            if should_print_debug:
+                print(f'\n[{step_label}] Query: {formulated_query}')
+
+            with ThinkingSpinner(f"{step_label}: searching your documents"):
+                retrieved = retrieve_related_content_from_db.retrieve_related_content(db_conn, formulated_query, False)
+
+            # Deduplicate across iterations by exact content
+            new_count = 0
+            for item in retrieved:
+                key = item[0]  # content string
+                if key not in seen_content_keys:
+                    seen_content_keys.add(key)
+                    all_retrieved_contents.append(item)
+                    new_count += 1
+
+            print(f"  ✓ {step_label}: found {new_count} new document(s) ({len(all_retrieved_contents)} total)")
+
+            # On the last iteration always stop; otherwise ask the LLM if more is needed
+            if iteration < MAX_RESEARCH_ITERATIONS - 1:
+                with ThinkingSpinner(f"{step_label}: assessing completeness"):
+                    needs_more, next_query = assess_research_progress(
+                        llm_model, llm_model_tokenizer, user_input, all_retrieved_contents
+                    )
+                if not needs_more:
+                    print(f"  ✓ Research complete after {iteration + 1} step(s).")
+                    break
+                print(f"  → Needs more context, searching again...")
+                formulated_query = next_query
 
         with ThinkingSpinner("Thinking"):
-            response = generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversation, retrived_contents, should_print_debug)
+            response = generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversation, all_retrieved_contents, should_print_debug)
         response = "\n> ".join([ll.rstrip() for ll in response.splitlines() if ll.strip()]) # remove empty lines
         entire_conversation.append(f'<|im_start|>assistant\n{response}<|im_end|>')
         print(f'\n>{response}')
