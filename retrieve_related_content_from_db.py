@@ -3,7 +3,7 @@ import database_connection
 import json
 
 RETRIEVAL_LIMIT = 10
-MIN_SIMILARITY = 0.3
+MIN_SIMILARITY = 0.2
 
 def retrieve_related_content(db_conn, query, should_print):
     cursor = db_conn.cursor()

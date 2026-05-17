@@ -1,3 +1,4 @@
 .DS_Store
 __pycache__/
 embedding_store/data/
+code.code-workspace

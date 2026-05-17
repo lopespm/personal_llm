@@ -13,25 +13,33 @@ else:
 
 print(f"Embedding generator using device: {device}")
 
-tokenizer = AutoTokenizer.from_pretrained('intfloat/multilingual-e5-large')
-model = AutoModel.from_pretrained('intfloat/multilingual-e5-large').to(device)
+tokenizer = AutoTokenizer.from_pretrained('Qwen/Qwen3-Embedding-0.6B', padding_side='left')
+model = AutoModel.from_pretrained('Qwen/Qwen3-Embedding-0.6B', dtype=torch.bfloat16).to(device).eval()
 
-def average_pool(last_hidden_states: Tensor,
-                 attention_mask: Tensor) -> Tensor:
-    last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
-    return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+def last_token_pool(last_hidden_states: Tensor,
+                    attention_mask: Tensor) -> Tensor:
+    left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
+    if left_padding:
+        return last_hidden_states[:, -1]
+    else:
+        sequence_lengths = attention_mask.sum(dim=1) - 1
+        batch_size = last_hidden_states.shape[0]
+        return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
+
+RETRIEVAL_TASK = 'Given a personal knowledge base query, retrieve relevant passages that answer the query'
 
 def generate_embeddings(sentences_and_sources, is_query):
-    # Each input text should start with "query: " or "passage: ", even for non-English texts.
-    # For tasks other than retrieval, you can simply use the "query: " prefix.
+    # Queries use a task instruction prefix; passages are embedded as-is.
     sentences = []
     for sentence, source in sentences_and_sources:
-        prefix = "query: " if is_query else "passage:"
-        sentences.append(f'{prefix} {sentence}')
-    batch_dict = tokenizer(sentences, max_length=512, padding=True, truncation=True, return_tensors='pt')
+        if is_query:
+            sentences.append(f'Instruct: {RETRIEVAL_TASK}\nQuery: {sentence}')
+        else:
+            sentences.append(sentence)
+    batch_dict = tokenizer(sentences, max_length=8192, padding=True, truncation=True, return_tensors='pt')
     batch_dict = {k: v.to(device) for k, v in batch_dict.items()}
-    with torch.no_grad():
+    with torch.inference_mode():
         outputs = model(**batch_dict)
-    embeddings = average_pool(outputs.last_hidden_state, batch_dict['attention_mask'])
+    embeddings = last_token_pool(outputs.last_hidden_state, batch_dict['attention_mask'])
     embeddings = F.normalize(embeddings, p=2, dim=1)
-    return embeddings.cpu().numpy().tolist()
+    return embeddings.float().cpu().numpy().tolist()
