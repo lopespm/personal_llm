@@ -4,6 +4,35 @@ import formulate_query_for_retrieving_content
 import retrieve_related_content_from_db
 import sys
 import transformers
+import threading
+import itertools
+import time
+
+
+class ThinkingSpinner:
+    def __init__(self, message="Thinking"):
+        self._message = message
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+
+    def _spin(self):
+        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        for frame in itertools.cycle(frames):
+            if self._stop_event.is_set():
+                break
+            sys.stdout.write(f"\r{frame} {self._message}...")
+            sys.stdout.flush()
+            time.sleep(0.08)
+        sys.stdout.write("\r" + " " * (len(self._message) + 6) + "\r")
+        sys.stdout.flush()
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self._stop_event.set()
+        self._thread.join()
 
 SPECIFIC_ROLE_OF_ASSISTANT = "assistant"
 #SPECIFIC_ROLE_OF_ASSISTANT = "philosopher"
@@ -60,15 +89,16 @@ def start_chat(llm_model, llm_model_tokenizer, db_conn, should_print_debug):
 
         entire_conversation.append(f'<|im_start|>user\n{user_input}<|im_end|>')
 
-        formulated_query = formulate_query_for_retrieving_content.formulate_query(llm_model, llm_model_tokenizer, "\n".join(entire_conversation))
+        with ThinkingSpinner("Searching your documents"):
+            formulated_query = formulate_query_for_retrieving_content.formulate_query(llm_model, llm_model_tokenizer, "\n".join(entire_conversation))
+            retrived_contents = retrieve_related_content_from_db.retrieve_related_content(db_conn, formulated_query, False)
+
         if (should_print_debug):
             print(f'Formulated query: {formulated_query}')
-
-        retrived_contents = retrieve_related_content_from_db.retrieve_related_content(db_conn, formulated_query, False)
-        if (should_print_debug):
             print(f'Retrived Contents: {retrived_contents}')
 
-        response = generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversation, retrived_contents, should_print_debug)
+        with ThinkingSpinner("Thinking"):
+            response = generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversation, retrived_contents, should_print_debug)
         response = "\n> ".join([ll.rstrip() for ll in response.splitlines() if ll.strip()]) # remove empty lines
         entire_conversation.append(f'<|im_start|>assistant\n{response}<|im_end|>')
         print(f'\n>{response}')
