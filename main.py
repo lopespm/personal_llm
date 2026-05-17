@@ -1,7 +1,4 @@
-from mlx_lm import load, generate
-from mlx_lm.utils import generate_step
-from mlx_lm.tokenizer_utils import TokenizerWrapper
-import mlx.core as mx
+from mlx_lm import load, generate, stream_generate
 import database_connection
 import formulate_query_for_retrieving_content
 import retrieve_related_content_from_db
@@ -137,52 +134,43 @@ def generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversati
     if (should_print_debug):
         print("Generated Prompt:", prompt)
 
-    tok = llm_model_tokenizer if isinstance(llm_model_tokenizer, TokenizerWrapper) else TokenizerWrapper(llm_model_tokenizer)
-    prompt_tokens = mx.array(tok.encode(prompt))
-    detokenizer = tok.detokenizer
-    detokenizer.reset()
-
-    gen = zip(generate_step(prompt_tokens, llm_model), range(2048))
+    gen = stream_generate(llm_model, llm_model_tokenizer, prompt=prompt, max_tokens=2048)
 
     with ThinkingSpinner("Thinking"):
-        first_item = next(gen, None)
+        first_response = next(gen, None)
 
     print("\n> ", end="", flush=True)
 
-    if first_item is not None:
-        (token, _), _ = first_item
-        if token != tok.eos_token_id:
-            detokenizer.add_token(token)
-            print(detokenizer.last_segment, end="", flush=True)
+    full_text = ""
+    recent_lines = deque(maxlen=12)
+    current_line = ""
+    should_stop = False
 
-            recent_lines = deque(maxlen=12)
-            current_line = ""
-            should_stop = False
+    if first_response is not None:
+        seg = first_response.text
+        print(seg, end="", flush=True)
+        full_text += seg
 
-            for (token, _), _ in gen:
-                if token == tok.eos_token_id:
+        for response in gen:
+            seg = response.text
+            print(seg, end="", flush=True)
+            full_text += seg
+            current_line += seg
+            if '\n' in current_line:
+                parts = current_line.split('\n')
+                for line in parts[:-1]:
+                    stripped = line.strip()
+                    if stripped:
+                        recent_lines.append(stripped)
+                        if recent_lines.count(stripped) >= 2:
+                            should_stop = True
+                            break
+                if should_stop:
                     break
-                detokenizer.add_token(token)
-                seg = detokenizer.last_segment
-                print(seg, end="", flush=True)
-                current_line += seg
-                if '\n' in current_line:
-                    parts = current_line.split('\n')
-                    for line in parts[:-1]:
-                        stripped = line.strip()
-                        if stripped:
-                            recent_lines.append(stripped)
-                            if recent_lines.count(stripped) >= 2:
-                                should_stop = True
-                                break
-                    if should_stop:
-                        break
-                    current_line = parts[-1]
+                current_line = parts[-1]
 
-    detokenizer.finalize()
-    print(detokenizer.last_segment, flush=True)
-
-    return detokenizer.text
+    print(flush=True)
+    return full_text
 
 
 def start_chat(llm_model, llm_model_tokenizer, db_conn, should_print_debug):
