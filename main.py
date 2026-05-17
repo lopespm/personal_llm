@@ -1,4 +1,7 @@
 from mlx_lm import load, generate
+from mlx_lm.utils import generate_step
+from mlx_lm.tokenizer_utils import TokenizerWrapper
+import mlx.core as mx
 import database_connection
 import formulate_query_for_retrieving_content
 import retrieve_related_content_from_db
@@ -97,14 +100,34 @@ def generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversati
     if (should_print_debug):
         print("Generated Prompt:", prompt)
 
-    entire_reponse = ""
-    for i in range(10):
-        response = generate(llm_model, llm_model_tokenizer, prompt=prompt + entire_reponse, verbose=False)
-        if (response.strip() == ""):
-            break
-        entire_reponse += response
+    tok = llm_model_tokenizer if isinstance(llm_model_tokenizer, TokenizerWrapper) else TokenizerWrapper(llm_model_tokenizer)
+    prompt_tokens = mx.array(tok.encode(prompt))
+    detokenizer = tok.detokenizer
+    detokenizer.reset()
 
-    return entire_reponse
+    gen = zip(generate_step(prompt_tokens, llm_model), range(2048))
+
+    with ThinkingSpinner("Thinking"):
+        first_item = next(gen, None)
+
+    print("\n> ", end="", flush=True)
+
+    if first_item is not None:
+        (token, _), _ = first_item
+        if token != tok.eos_token_id:
+            detokenizer.add_token(token)
+            print(detokenizer.last_segment, end="", flush=True)
+
+            for (token, _), _ in gen:
+                if token == tok.eos_token_id:
+                    break
+                detokenizer.add_token(token)
+                print(detokenizer.last_segment, end="", flush=True)
+
+    detokenizer.finalize()
+    print(detokenizer.last_segment, flush=True)
+
+    return detokenizer.text
 
 
 def start_chat(llm_model, llm_model_tokenizer, db_conn, should_print_debug):
@@ -155,11 +178,9 @@ def start_chat(llm_model, llm_model_tokenizer, db_conn, should_print_debug):
                 print(f"  → Needs more context, searching again...")
                 formulated_query = next_query
 
-        with ThinkingSpinner("Thinking"):
-            response = generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversation, all_retrieved_contents, should_print_debug)
+        response = generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversation, all_retrieved_contents, should_print_debug)
         response = "\n> ".join([ll.rstrip() for ll in response.splitlines() if ll.strip()]) # remove empty lines
         entire_conversation.append(f'<|im_start|>assistant\n{response}<|im_end|>')
-        print(f'\n>{response}')
 
 
 def main():
