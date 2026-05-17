@@ -36,7 +36,7 @@ def generate_embeddings(sentences_and_sources, is_query):
             sentences.append(f'Instruct: {RETRIEVAL_TASK}\nQuery: {sentence}')
         else:
             sentences.append(sentence)
-    batch_dict = tokenizer(sentences, max_length=8192, padding=True, truncation=True, return_tensors='pt')
+    batch_dict = tokenizer(sentences, max_length=1024, padding=True, truncation=True, return_tensors='pt')
     batch_dict = {k: v.to(device) for k, v in batch_dict.items()}
     with torch.inference_mode():
         outputs = model(**batch_dict)

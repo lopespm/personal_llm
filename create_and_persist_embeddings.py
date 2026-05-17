@@ -8,7 +8,7 @@ import threading
 import queue
 from tqdm import tqdm
 
-BATCH_SIZE = 64  # Qwen3-Embedding-0.6B on MPS/bfloat16 comfortably handles 64; tune up/down if you hit OOM
+BATCH_SIZE = 64  # Fine on 128 GB unified memory with max_length=1024 (attention per layer ~2 GB)
 
 def divide_into_chunks(target, n_size_per_chunk): 
     # Looping till length of target 
