@@ -10,8 +10,10 @@ import transformers
 import threading
 import itertools
 import time
+from collections import deque
 
 MAX_RESEARCH_ITERATIONS = 4
+MAX_HISTORY_CHARS = 16000  # ~4000 tokens; oldest turns are dropped when exceeded
 
 
 class ThinkingSpinner:
@@ -49,13 +51,19 @@ def related_contents_list_into_string(related_contents_list):
         output.append(f'<<document:{source}>>: {content}')
     return "\n".join(output)
 
+def truncate_conversation_history(conversation):
+    """Drop oldest turns until total character count is within MAX_HISTORY_CHARS."""
+    while len(conversation) > 2:
+        if sum(len(t) for t in conversation) <= MAX_HISTORY_CHARS:
+            break
+        conversation.pop(0)
+
 def requires_document_retrieval(llm_model, llm_model_tokenizer, user_question):
     """Ask the LLM whether the user's message requires searching personal documents."""
     prompt = """<|im_start|>system
 You are a routing assistant. Decide whether the user's message requires searching through personal documents to answer.
-Reply NO only if the message is clearly one of these: a greeting, a farewell, a simple social exchange, a pure math question, or a general world knowledge question that has nothing to do with the user's personal life, activities, notes, or memories.
-Reply YES for anything that touches the user's personal life, activities, plans, notes, history, or memories — even if it seems vague.
-When in doubt, reply YES.
+Reply NO for: greetings, farewells, simple social exchanges, pure math or logic questions, and general world knowledge questions with no connection to the user's personal life, notes, or memories.
+Reply YES for: anything touching the user's personal life, activities, plans, notes, history, or memories.
 Reply with only YES or NO, nothing else.
 <|im_end|>
 <|im_start|>user
@@ -67,25 +75,29 @@ Reply with only YES or NO, nothing else.
     response = generate(llm_model, llm_model_tokenizer, prompt=prompt, verbose=False).strip()
     return response.upper().startswith("YES")
 
-def assess_research_progress(llm_model, llm_model_tokenizer, user_question, accumulated_contents):
+def assess_research_progress(llm_model, llm_model_tokenizer, entire_conversation, user_question, accumulated_contents):
     """Ask the LLM if retrieved documents are sufficient or if another search is needed.
     Returns (needs_more: bool, next_query: str | None)."""
     content_summary = related_contents_list_into_string(accumulated_contents)
+    conversation_context = "\n".join(entire_conversation[:-1])  # exclude current unanswered turn
     prompt = """<|im_start|>system
 You are a research assistant deciding whether you have gathered enough information to fully answer a question.
-Given the user's question and the documents retrieved so far, decide:
+Given the conversation history, the user's latest question, and the documents retrieved so far, decide:
 1. If you have sufficient information to give a complete and accurate answer, reply with exactly: SATISFIED
 2. If important information is clearly missing and another search would help, reply with exactly: SEARCH: <specific search query>
 Reply with only one of these two formats, nothing else.
 <|im_end|>
 <|im_start|>user
-Question: {0}
+Conversation so far:
+{0}
+
+Latest question: {1}
 
 Documents retrieved so far:
-{1}
+{2}
 <|im_end|>
 <|im_start|>assistant
-""".format(user_question, content_summary)
+""".format(conversation_context, user_question, content_summary)
 
     response = generate(llm_model, llm_model_tokenizer, prompt=prompt, verbose=False).strip()
     if response.upper().startswith("SEARCH:"):
@@ -143,7 +155,7 @@ def generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversati
             detokenizer.add_token(token)
             print(detokenizer.last_segment, end="", flush=True)
 
-            line_counts = {}
+            recent_lines = deque(maxlen=12)
             current_line = ""
             should_stop = False
 
@@ -159,8 +171,8 @@ def generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversati
                     for line in parts[:-1]:
                         stripped = line.strip()
                         if stripped:
-                            line_counts[stripped] = line_counts.get(stripped, 0) + 1
-                            if line_counts[stripped] >= 3:
+                            recent_lines.append(stripped)
+                            if recent_lines.count(stripped) >= 2:
                                 should_stop = True
                                 break
                     if should_stop:
@@ -193,12 +205,12 @@ def start_chat(llm_model, llm_model_tokenizer, db_conn, should_print_debug):
         if not retrieval_needed:
             if should_print_debug:
                 print("\n[Skipping document retrieval — not needed for this message]")
-        else:
-            with ThinkingSpinner("Searching your documents"):
-                formulated_query = formulate_query_for_retrieving_content.formulate_query(llm_model, llm_model_tokenizer, "\n".join(entire_conversation))
 
         for iteration in range(MAX_RESEARCH_ITERATIONS if retrieval_needed else 0):
             step_label = f"Step {iteration + 1}/{MAX_RESEARCH_ITERATIONS}"
+            if iteration == 0:
+                with ThinkingSpinner("Formulating search query"):
+                    formulated_query = formulate_query_for_retrieving_content.formulate_query(llm_model, llm_model_tokenizer, "\n".join(entire_conversation))
             if should_print_debug:
                 print(f'\n[{step_label}] Query: {formulated_query}')
 
@@ -220,7 +232,7 @@ def start_chat(llm_model, llm_model_tokenizer, db_conn, should_print_debug):
             if iteration < MAX_RESEARCH_ITERATIONS - 1:
                 with ThinkingSpinner(f"{step_label}: assessing completeness"):
                     needs_more, next_query = assess_research_progress(
-                        llm_model, llm_model_tokenizer, user_input, all_retrieved_contents
+                        llm_model, llm_model_tokenizer, entire_conversation, user_input, all_retrieved_contents
                     )
                 if not needs_more:
                     print(f"  ✓ Research complete after {iteration + 1} step(s).")
@@ -231,6 +243,7 @@ def start_chat(llm_model, llm_model_tokenizer, db_conn, should_print_debug):
         response = generate_response_from_llm(llm_model, llm_model_tokenizer, entire_conversation, all_retrieved_contents, should_print_debug)
         response = "\n> ".join([ll.rstrip() for ll in response.splitlines() if ll.strip()]) # remove empty lines
         entire_conversation.append(f'<|im_start|>assistant\n{response}<|im_end|>')
+        truncate_conversation_history(entire_conversation)
 
 
 def main():

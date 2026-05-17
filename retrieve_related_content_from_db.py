@@ -3,6 +3,7 @@ import database_connection
 import json
 
 RETRIEVAL_LIMIT = 10
+MIN_SIMILARITY = 0.3
 
 def retrieve_related_content(db_conn, query, should_print):
     cursor = db_conn.cursor()
@@ -13,8 +14,9 @@ def retrieve_related_content(db_conn, query, should_print):
         cursor.execute(
             f"""SELECT id, content, source, 1 - (embedding <=> %s) AS cosine_similarity
                FROM items
+               WHERE 1 - (embedding <=> %s) >= {MIN_SIMILARITY}
                ORDER BY cosine_similarity DESC LIMIT {RETRIEVAL_LIMIT}""",
-            (query_embedding,)
+            (query_embedding, query_embedding)
         )
 
         similar_content = []

@@ -1,22 +1,18 @@
 from mlx_lm import generate
 
 def formulate_query(llm_model, llm_model_tokenizer, entire_conversation):
-	
-    prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>   
-    You the user's document keeper that has access to all the documents for the user.
-    Based on the entire conversation only, you will only reply with the question you will ask to query the appropriate user documents, in order to get all the relevant user's documents related with the conversation
-    Your question will explicity state what you are looking for
-    Whenever there are relative references in the conversation, you will always formulate them as absolute references.
-    You need to assume that the receiver of the question will not have access to the entire conversation, so you will need to be very explicit.
-    The question should be as simple as possible, in plain english.
-    <|eot_id|>
-    
-    {entire_conversation}
+    prompt = """<|im_start|>system
+You are the user's document keeper with access to all of their personal documents.
+Based on the conversation, formulate a single search query to retrieve the most relevant documents.
+The query must be self-contained and explicit — assume the recipient has no access to the conversation.
+Resolve any relative references (e.g. "last week", "yesterday", "my friend") into absolute terms based on context.
+Keep the query concise and in plain English.
+Reply with only the search query, nothing else.
+<|im_end|>
+<|im_start|>user
+{0}
+<|im_end|>
+<|im_start|>assistant
+""".format(entire_conversation)
 
-    <|start_header_id|>document keeper<|end_header_id|>
-    """
-    
-    formulated_query = []
-    response = generate(llm_model, llm_model_tokenizer, prompt=prompt, verbose=False)
-    formulated_query.append(response)
-    return "".join(formulated_query)
+    return generate(llm_model, llm_model_tokenizer, prompt=prompt, verbose=False).strip()
