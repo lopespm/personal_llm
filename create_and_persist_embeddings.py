@@ -32,36 +32,38 @@ def persist_content_list(db_conn, cursor, output_content_list, already_processed
     write_queue = queue.Queue(maxsize=2)  # back-pressure: don't let embeddings race too far ahead
     write_errors = []
 
-    def db_writer():
+    def db_writer(pbar):
         while True:
             item = write_queue.get()
             if item is _DONE:
                 break
-            rows, chunk_info_message = item
+            rows, _ = item
             try:
                 cursor.executemany("INSERT INTO items (content, source, embedding) VALUES (%s, %s, %s)", rows)
                 db_conn.commit()
-                tqdm.write(f'  ✓ Persisted chunk {chunk_info_message}')
+                pbar.update(1)
             except Exception as e:
                 write_errors.append(e)
                 break
 
-    writer = threading.Thread(target=db_writer, daemon=True)
-    writer.start()
-    try:
-        for chunk_idx, chunk in enumerate(tqdm(chunks, desc='Embedding batches', unit='batch')):
-            chunk_info_message = f'{chunk_idx + 1} of {total_chunks}'
-            embeddings = generate_embeddings(chunk, False)
-            rows = [
-                (item[0].replace("\x00", "\uFFFD"), item[1], json.dumps(embeddings[idx]))
-                for idx, item in enumerate(chunk)
-            ]
-            write_queue.put((rows, chunk_info_message))
-            if write_errors:
-                raise write_errors[0]
-    finally:
-        write_queue.put(_DONE)
-        writer.join()
+    with tqdm(total=total_chunks, desc='Embedding batches', unit='batch') as embed_pbar, \
+         tqdm(total=total_chunks, desc='DB writes      ', unit='batch') as db_pbar:
+        writer = threading.Thread(target=db_writer, args=(db_pbar,), daemon=True)
+        writer.start()
+        try:
+            for chunk in chunks:
+                embeddings = generate_embeddings(chunk, False)
+                rows = [
+                    (item[0].replace("\x00", "\uFFFD"), item[1], json.dumps(embeddings[idx]))
+                    for idx, item in enumerate(chunk)
+                ]
+                write_queue.put((rows, None))
+                embed_pbar.update(1)
+                if write_errors:
+                    raise write_errors[0]
+        finally:
+            write_queue.put(_DONE)
+            writer.join()
     if write_errors:
         raise write_errors[0]
 
