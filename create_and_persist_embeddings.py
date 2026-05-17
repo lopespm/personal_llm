@@ -3,6 +3,7 @@ from embedding_generator_multilingual import generate_embeddings
 import whatsapp_to_embeddings
 import obsidian_to_embeddings
 import json
+import argparse
 
 BATCH_SIZE = 512  # Decrease this if you hit memory pressure; larger batches are more GPU-efficient
 
@@ -33,10 +34,15 @@ def persist_content_list(db_conn, cursor, output_content_list, already_processed
         db_conn.commit()
         print(f'Persisted chunk {chunk_info_message}')
 
-def run():
+def run(wipe=False):
     with database_connection.create_database_connection() as db_conn:
         cursor = db_conn.cursor()
         try:
+            if wipe:
+                print('Wiping items table...')
+                cursor.execute("DELETE FROM items")
+                db_conn.commit()
+                print('Items table wiped.')
             already_processed_sources = get_already_processed_sources(cursor)
             print(f'Starting persistence process for Obsidian...')
             persist_content_list(db_conn, cursor, obsidian_to_embeddings.parse(False), already_processed_sources)
@@ -49,4 +55,7 @@ def run():
             cursor.close()
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--wipe', action='store_true', help='Wipe the items table before processing')
+    args = parser.parse_args()
+    run(wipe=args.wipe)
