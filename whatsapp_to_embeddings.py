@@ -11,7 +11,7 @@ def parse(should_print):
 
     contacts = get_contacts_from_csv()
 
-    f = open(whatsapp_working_path + '/result.json')
+    f = open(WHATSAPP_WORKING_PATH + '/result.json')
     data = json.load(f)
 
     for key_conversation, conversation in data.items():
